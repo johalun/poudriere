@@ -53,6 +53,7 @@ Options:
     -f fs         -- FS name (tank/jails/myjail) if fs is "none" then do not
                      create on ZFS.
     -K kernel     -- Build the jail with the kernel
+    -G            -- Include kernel extras (source tree and debug files).
     -M mountpoint -- Mountpoint
     -m method     -- When used with -c, overrides the default method for
                      obtaining and building the jail. See poudriere(8) for more
@@ -437,6 +438,9 @@ buildworld() {
 		echo "WITH_ELFTOOLCHAIN_TOOLS=y" >> ${JAILMNT}/etc/src.conf
 	fi
 
+	# Don't install userland debug files.
+	echo "WITHOUT_DEBUG_FILES=yes" >> ${JAILMNT}/etc/src.conf
+
 	export __MAKE_CONF=/dev/null
 	export SRCCONF=${JAILMNT}/etc/src.conf
 	export SRC_ENV_CONF=${JAILMNT}/etc/src-env.conf
@@ -728,6 +732,7 @@ install_from_ftp() {
 
 		DISTS="${DISTS} lib32"
 		[ -n "${KERNEL}" ] && DISTS="${DISTS} kernel"
+		[ -n "${KERNEL_DBG}" ] && DISTS="${DISTS} kernel-dbg src"
 		[ -s "${JAILMNT}/fromftp/MANIFEST" ] || err 1 "Empty MANIFEST file."
 		for dist in ${DISTS}; do
 			awk -vdist="${dist}.txz" '\
@@ -1018,7 +1023,7 @@ XDEV=0
 BUILD=0
 GIT_DEPTH=--depth=1
 
-while getopts "biJ:j:v:a:z:m:nf:M:sdkK:lqcip:r:uU:t:z:P:S:DxC:" FLAG; do
+while getopts "biJ:j:v:a:z:m:nf:M:sdkK:Glqcip:r:uU:t:z:P:S:DxC:" FLAG; do
 	case "${FLAG}" in
 		b)
 			BUILD=1
@@ -1061,6 +1066,9 @@ while getopts "biJ:j:v:a:z:m:nf:M:sdkK:lqcip:r:uU:t:z:P:S:DxC:" FLAG; do
 			;;
 		K)
 			KERNEL=${OPTARG:-GENERIC}
+			;;
+		G)
+			KERNEL_DBG=1
 			;;
 		l)
 			LIST=1

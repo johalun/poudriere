@@ -40,6 +40,7 @@ Parameters:
     -n imagename    -- The name of the generated image
     -o outputdir    -- Image destination directory
     -p portstree    -- Ports tree
+    -P              -- Install packages from official repo
     -s size         -- Set the image size
     -t type         -- Type of image can be one of (default iso+zmfs):
                     -- iso, iso+mfs, iso+zmfs, usb, usb+mfs, usb+zmfs,
@@ -130,7 +131,7 @@ mkminiroot() {
 . ${SCRIPTPREFIX}/common.sh
 HOSTNAME=poudriere-image
 
-while getopts "c:f:h:j:m:n:o:p:s:t:X:z:" FLAG; do
+while getopts "c:f:h:j:m:n:o:Pp:s:t:X:z:" FLAG; do
 	case "${FLAG}" in
 		c)
 			[ -d "${OPTARG}" ] || err 1 "No such extract directory: ${OPTARG}"
@@ -163,6 +164,9 @@ while getopts "c:f:h:j:m:n:o:p:s:t:X:z:" FLAG; do
 			[ "${OPTARG#/}" = "${OPTARG}" ] && \
 			    OPTARG="${SAVED_PWD}/${OPTARG}"
 			OUTPUTDIR=${OPTARG}
+			;;
+		P)
+			PKGREPO=1
 			;;
 		p)
 			PTNAME=${OPTARG}
@@ -369,8 +373,11 @@ touch ${WRKDIR}/src.conf
 make -C ${mnt}/usr/src DESTDIR=${WRKDIR}/world BATCH_DELETE_OLD_FILES=yes SRCCONF=${WRKDIR}/src.conf delete-old delete-old-libs
 
 [ ! -d "${EXTRADIR}" ] || cp -fRPp ${EXTRADIR}/ ${WRKDIR}/world/
-mv ${WRKDIR}/world/etc/login.conf.orig ${WRKDIR}/world/etc/login.conf
-cap_mkdb ${WRKDIR}/world/etc/login.conf
+if [ -e "${WRKDIR}/world/etc/login.conf.orig" ]; then
+	# No login.conf.orig on  13.0-CURRENT-i386
+	mv ${WRKDIR}/world/etc/login.conf.orig ${WRKDIR}/world/etc/login.conf
+	cap_mkdb ${WRKDIR}/world/etc/login.conf
+fi
 
 # Set hostname
 if [ -n "${HOSTNAME}" ]; then
@@ -385,12 +392,15 @@ convert_package_list() {
 	local REPOS_DIR=$(mktemp -dt poudriere_repo)
 	local ABI_FILE
 
-	# This pkg rquery is always ran in host so we need a host-centric
-	# repo.conf always.
-	cat > "${REPOS_DIR}/repo.conf" <<-EOF
-	FreeBSD: { enabled: false }
-	local: { url: file:///${WRKDIR}/world/tmp/packages }
-	EOF
+	if [ -n "${PKGREPO}" ]; then
+	else
+		# This pkg rquery is always ran in host so we need a host-centric
+		# repo.conf always.
+		cat > "${REPOS_DIR}/repo.conf" <<-EOF
+		FreeBSD: { enabled: false }
+		local: { url: file:///${WRKDIR}/world/tmp/packages }
+		EOF
+	fi
 
 	export REPOS_DIR PKG_DBDIR
 	# Always need this from host.
@@ -405,36 +415,73 @@ convert_package_list() {
 # install packages if any is needed
 if [ -n "${PACKAGELIST}" ]; then
 	mkdir -p ${WRKDIR}/world/tmp/packages
-	${NULLMOUNT} ${POUDRIERE_DATA}/packages/${MASTERNAME} ${WRKDIR}/world/tmp/packages
+	mount -t devfs devfs ${WRKDIR}/world/dev
+	chroot "${WRKDIR}/world" env /usr/sbin/pwd_mkdb -p /etc/master.passwd
+	[ -n "${RESOLV_CONF}" ] && cp -v "${RESOLV_CONF}" "${WRKDIR}/world/etc/"
+	mkdir -p ${POUDRIERE_DATA}/pkgcache/${MASTERNAME}
+	mkdir -p ${WRKDIR}/world/var/cache/pkg
 	if [ "${arch}" == "${host_arch}" ]; then
-		cat > "${WRKDIR}/world/tmp/repo.conf" <<-EOF
-		FreeBSD: { enabled: false }
-		local: { url: file:///tmp/packages }
-		EOF
-		mount -t devfs devfs ${WRKDIR}/world/dev
-		convert_package_list "${PACKAGELIST}" | \
-		    xargs chroot "${WRKDIR}/world" env \
-		    REPOS_DIR=/tmp ASSUME_ALWAYS_YES=yes \
-		    pkg install
-		umount ${WRKDIR}/world/dev
-	else
-		cat > "${WRKDIR}/world/tmp/repo.conf" <<-EOF
-		FreeBSD: { enabled: false }
-		local: { url: file:///${WRKDIR}/world/tmp/packages }
-		EOF
-		(
-			export ASSUME_ALWAYS_YES=yes SYSLOG=no \
-			    REPOS_DIR="${WRKDIR}/world/tmp/" \
-			    ABI_FILE="${WRKDIR}/world/usr/lib/crt1.o"
-			pkg -r "${WRKDIR}/world/" install pkg
+		if [ -n "${PKGREPO}" ]; then
+			${NULLMOUNT} ${POUDRIERE_DATA}/pkgcache/${MASTERNAME} \
+				     ${WRKDIR}/world/var/cache/pkg
 			convert_package_list "${PACKAGELIST}" | \
-			    xargs pkg -r "${WRKDIR}/world/" install
-		)
+				xargs chroot "${WRKDIR}/world" env \
+				ASSUME_ALWAYS_YES=yes \
+				pkg install
+			umount ${WRKDIR}/world/var/cache/pkg
+		else
+			${NULLMOUNT} ${POUDRIERE_DATA}/packages/${MASTERNAME} ${WRKDIR}/world/tmp/packages
+			cat > "${WRKDIR}/world/tmp/repo.conf" <<-EOF
+			FreeBSD: { enabled: false }
+			local: { url: file:///tmp/packages }
+			EOF
+			convert_package_list "${PACKAGELIST}" | \
+				xargs chroot "${WRKDIR}/world" env \
+				REPOS_DIR=/tmp ASSUME_ALWAYS_YES=yes \
+				pkg install
+			umount ${WRKDIR}/world/tmp/packages
+		fi
+	else
+		if [ -n "${PKGREPO}" ]; then
+			${NULLMOUNT} ${POUDRIERE_DATA}/pkgcache/${MASTERNAME} \
+				     ${WRKDIR}/world/var/cache/pkg
+			(
+				export ASSUME_ALWAYS_YES=yes SYSLOG=no \
+				       ABI_FILE="${WRKDIR}/world/usr/lib/crt1.o"
+				pkg -r "${WRKDIR}/world/" install pkg
+				convert_package_list "${PACKAGELIST}" | \
+					xargs pkg -r "${WRKDIR}/world/" install
+			)
+			umount ${WRKDIR}/world/var/cache/pkg
+		else
+			${NULLMOUNT} ${POUDRIERE_DATA}/packages/${MASTERNAME} ${WRKDIR}/world/tmp/packages
+			cat > "${WRKDIR}/world/tmp/repo.conf" <<-EOF
+			FreeBSD: { enabled: false }
+			local: { url: file:///${WRKDIR}/world/tmp/packages }
+			EOF
+			(
+				export ASSUME_ALWAYS_YES=yes SYSLOG=no \
+				       REPOS_DIR="${WRKDIR}/world/tmp/" \
+				       ABI_FILE="${WRKDIR}/world/usr/lib/crt1.o"
+				pkg -r "${WRKDIR}/world/" install pkg
+				convert_package_list "${PACKAGELIST}" | \
+					xargs pkg -r "${WRKDIR}/world/" install
+			)
+			umount ${WRKDIR}/world/tmp/packages
+		fi
 	fi
-	rm -rf ${WRKDIR}/world/var/cache/pkg
-	umount ${WRKDIR}/world/tmp/packages
+	umount ${WRKDIR}/world/dev
 	rmdir ${WRKDIR}/world/tmp/packages
+	rm -rf ${WRKDIR}/world/var/cache/pkg
 	rm ${WRKDIR}/world/var/db/pkg/repo-* 2>/dev/null || :
+fi
+
+
+if [ -e "${WRKDIR}/world/overlay.sh" ]; then
+	export MASTERNAME
+	mount -t devfs devfs ${WRKDIR}/world/dev
+	chroot "${WRKDIR}/world" env LD_LIBRARY_PATH=/lib:/usr/lib:/usr/local/lib /overlay.sh
+	umount ${WRKDIR}/world/dev
 fi
 
 case ${MEDIATYPE} in
@@ -594,8 +641,8 @@ usb)
 	mkimg -s gpt -b ${mnt}/boot/pmbr \
 		-p efi:=${mnt}/boot/boot1.efifat \
 		-p freebsd-boot:=${mnt}/boot/gptboot \
-		-p freebsd-ufs:=${WRKDIR}/raw.img \
-		-p freebsd-swap::1M \
+		-p freebsd-ufs/gfx-root:=${WRKDIR}/raw.img \
+		-p freebsd-swap/gfx-swap::2G \
 		-o ${OUTPUTDIR}/${FINALIMAGE}
 	;;
 tar)
