@@ -259,14 +259,17 @@ _jget mnt ${JAILNAME} mnt || err 1 "Missing mnt metadata for jail"
 excludelist=$(mktemp -t excludelist)
 mkdir -p ${WRKDIR}/world
 mkdir -p ${WRKDIR}/out
-[ -z "${EXCLUDELIST}" ] || cat ${EXCLUDELIST} > ${excludelist}
-cat >> ${excludelist} << EOF
+if [ -n "${EXCLUDELIST}" ]; then
+	cat ${EXCLUDELIST} > ${excludelist}
+else
+	cat > ${excludelist} << EOF
 usr/src
 var/db/freebsd-update
 var/db/etcupdate
 boot/kernel.old
 nxb-bin
 EOF
+fi
 
 # Need to convert IMAGESIZE from bytes to bibytes
 # This conversion is needed to be compliant with marketing 'unit'
