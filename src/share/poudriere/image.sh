@@ -682,8 +682,19 @@ usb+*mfs)
 	;;
 usb)
 	FINALIMAGE=${IMAGENAME}.img
+
+	mkdir -p /tmp/efimnt
+	dd if=/dev/zero of=/tmp/efiboot.img bs=4k count=10240
+	MDDEV=`mdconfig -a -t vnode -f /tmp/efiboot.img`
+	newfs_msdos -F 32 -c 1 -m 0xf8 /dev/${MDDEV}
+	mount -t msdosfs /dev/${MDDEV} /tmp/efimnt
+	mkdir -p /tmp/efimnt/EFI/BOOT
+	cp ${mnt}/boot/loader.efi /tmp/efimnt/EFI/BOOT/BOOTX64.efi
+	umount /tmp/efimnt
+	mdconfig -d -u $(echo ${MDDEV} | sed 's/md//')
+
 	mkimg -s gpt -b ${mnt}/boot/pmbr \
-		-p efi:=${mnt}/boot/boot1.efifat \
+		-p efi:=/tmp/efiboot.img \
 		-p freebsd-boot:=${mnt}/boot/gptboot \
 		-p freebsd-ufs/gfx-root:=${WRKDIR}/raw.img \
 		-p freebsd-swap/gfx-swap::2G \
